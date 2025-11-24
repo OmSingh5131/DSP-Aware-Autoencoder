@@ -8,6 +8,8 @@ import math
 import time
 import subprocess # <--- Added for launching Windows apps
 from torchvision import transforms
+from scipy.fftpack import dct
+import matplotlib.cm as cm
 
 # --- Imports for Metrics ---
 try:
@@ -18,7 +20,7 @@ except ImportError:
     SKIMAGE_AVAILABLE = False
 
 # --- Import AI Model ---
-# Ensure AI_functions.py is in the same directory as this script in WSL
+
 try:
     from AI_functions import SatelliteVBR, NUM_FILTERS_N, NUM_FILTERS_M
 except ImportError:
@@ -136,6 +138,43 @@ def get_metrics(orig, comp):
         s = 0
     return p, s
 
+def get_dct_spectrum(image_pil):
+    """
+    Computes the 2D DCT and returns a COLORFUL heatmap (Jet Colormap).
+    Blue areas = Low Energy (Blurred/High Frequency removed).
+    Red/Yellow areas = High Energy (Structural Information).
+    """
+    # 1. Convert to Grayscale
+    img_gray = image_pil.convert('L')
+    img_array = np.array(img_gray)
+
+    # 2. Compute 2D DCT (Scipy)
+    dct_rows = dct(img_array, type=2, axis=0, norm='ortho')
+    dct_2d = dct(dct_rows, type=2, axis=1, norm='ortho')
+
+    # 3. Log Transform (to visualize the massive range of values)
+    log_dct = np.log1p(np.abs(dct_2d))
+
+    # 4. Normalize to 0-1 Range
+    min_val = log_dct.min()
+    max_val = log_dct.max()
+    
+    # Avoid divide by zero
+    if max_val - min_val == 0:
+        norm_dct = np.zeros_like(log_dct)
+    else:
+        norm_dct = (log_dct - min_val) / (max_val - min_val)
+
+    # 5. Apply "Jet" Colormap (Blue background for high freq loss)
+    # This creates an RGBA array (Height, Width, 4)
+    colormap = cm.get_cmap('jet') 
+    colored_dct = colormap(norm_dct)
+
+    # 6. Convert to PIL Image (Drop Alpha channel, scale to 0-255)
+    img_out = Image.fromarray((colored_dct[:, :, :3] * 255).astype(np.uint8))
+
+    return img_out
+
 # --- UI Layout ---
 
 st.set_page_config(page_title="DSP-Aware 5G Satellite AI", layout="wide")
@@ -164,11 +203,12 @@ with st.sidebar:
 st.title("DSP-Aware Convolutional Autoencoder for Satellite Image Compression in 5G Network Slicing")
 
 st.markdown("""
-> **System Description:** This AI System uses a **hyperprior autoencoder architecture** to produce compressed satellite images. 
-> It retains high-frequency features with performance at par with advanced mathematical algorithms. 
-> It utilizes **5G Network Slicing** for efficient, mission-critical, low-latency transmission.
+> **System Description:**  
+> - This AI-driven system employs a **hyperprior autoencoder** to generate highly compressed yet **high-fidelity satellite images**, preserving essential **high-frequency details** with performance comparable to advanced mathematical codecs and leverages **5G Network Slicing** to enable **efficient**, **mission-critical**, and **ultra-low-latency** data transmission.
 """)
+
 st.divider()
+
 
 # --- STEP 1: Image Capture ---
 st.header("1. 🛰️ Image Captured by Satellite")
@@ -183,7 +223,7 @@ if uploaded_file:
         st.session_state['step'] = 2 # Advance step
 
     # Display Image (Reduced size as requested)
-    st.image(st.session_state['original_image'], caption="Raw Satellite Input", width=350)
+    st.image(st.session_state['original_image'], caption="Raw Satellite Input", width=200)
 
     # --- STEP 2: Compression ---
     st.divider()
@@ -310,3 +350,39 @@ if uploaded_file:
                 st.warning(f"**PSNR:** {res['p_jpg']:.2f} dB\n\n**SSIM:** {res['s_jpg']:.4f}")
             
             st.info(f"**Compression Rate (BPP):** {st.session_state['ai_bpp']:.4f} bits/pixel")
+            
+            
+            # --- STEP 5: DCT Analysis ---
+            if st.session_state.get('results'):
+                st.divider()
+                st.header("5. 🧮 Image Processing - Discrete Cosine Transform")
+                
+                st.markdown("""
+                **Frequency Domain Analysis:**
+                * **Blue Zones:** Represent areas with little to no energy (High frequencies that have been blurred/discarded).
+                * **Red/Yellow Zones:** Represent the core structural information of the image.
+                """)
+
+                if st.button("📊 Calculate Frequency Spectrum"):
+                    with st.spinner("Computing Colorful 2D-DCT transforms..."):
+                        # Retrieve images from previous step
+                        res = st.session_state['results']
+                        
+                        # Compute Spectrums
+                        dct_ai = get_dct_spectrum(res['recon'])
+                        dct_jpeg = get_dct_spectrum(res['jpeg'])
+                        
+                        # Layout
+                        c_dct1, c_dct2 = st.columns(2)
+                        
+                        with c_dct1:
+                            st.subheader("Left : DCT for AI Reconstruction")
+                            # Using use_container_width instead of use_column_width
+                            st.image(dct_ai, caption="DSP-Aware Autoencoder Spectrum", use_container_width=True)
+                            st.info("Note the smooth distribution of energy (Red/Yellow) fading naturally into Blue.")
+
+                        with c_dct2:
+                            st.subheader("Right : DCT for JPEG Construction")
+                            # Using use_container_width instead of use_column_width
+                            st.image(dct_jpeg, caption="Standard JPEG Spectrum", use_container_width=True)
+                            st.warning("Note the 'Grid' patterns caused by 8x8 blocks and the sharp cutoff to Blue in corners.")
